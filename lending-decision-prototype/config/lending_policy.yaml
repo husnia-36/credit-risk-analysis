@@ -1,0 +1,93 @@
+# Lending policy configuration -- Part 6 (4.7).
+# These values are business decisions, independent of the ML model, and
+# can be changed here without retraining or redeploying the model.
+policyVersion: "lending-policy-v1"
+
+pricing:
+  annualInterestRate: 0.18   # 18% p.a., documented assumption -- see reports/05
+
+affordability:
+  maxAllowedDTI: 0.40        # 40% projected DTI ceiling
+  definedExpenses: 0.0       # no dataset-driven living-cost figure available
+
+productLimits:
+  minLoanAmount: 1000
+  maxLoanAmount: 100000
+  allowedTenureMonths: [3, 6, 12, 18, 24, 36]
+
+# Extra cap applied on top of the affordability-derived max amount, by
+# risk band. null means "no extra cap beyond affordability + product max".
+riskBandCaps:
+  VERY_LOW: null
+  LOW: null
+  MEDIUM: 50000
+  HIGH: 0
+  VERY_HIGH: 0
+
+# Score range treated as REFER (manual review) rather than an automatic
+# APPROVE/REJECT -- deliberately straddles the MEDIUM/HIGH risk-band
+# boundary (score 623), since that is exactly the zone where a small
+# model error could flip the automatic outcome.
+manualReviewScoreRange: [605, 640]
+
+minimumApprovalScore: 623   # must clear the MEDIUM/HIGH boundary to auto-approve
+
+# The policy table itself, for documentation/traceability -- the actual
+# evaluation logic lives in src/policy.py, in this same precedence order.
+rules:
+  - id: POL-001
+    description: "Risk band is VERY_HIGH or HIGH"
+    input: riskBand
+    operator: in
+    value: [HIGH, VERY_HIGH]
+    outcome: REJECT
+    reasonCode: RISK_TOO_HIGH
+  - id: POL-002
+    description: "Requested tenure is not one of the product's supported tenures"
+    input: requestedTenure
+    operator: not_in
+    value: allowedTenureMonths
+    outcome: REJECT
+    reasonCode: UNSUPPORTED_TENURE
+  - id: POL-003
+    description: "Disposable income after the new installment would be negative"
+    input: disposableIncomeAfter
+    operator: "<"
+    value: 0
+    outcome: REJECT
+    reasonCode: AFFORDABILITY_LIMIT_EXCEEDED
+  - id: POL-004
+    description: "Projected DTI exceeds the maximum allowed DTI"
+    input: projectedDebtToIncomeRatio
+    operator: ">"
+    value: maxAllowedDTI
+    outcome: COUNTER_OFFER
+    reasonCode: PROJECTED_DTI_TOO_HIGH
+  - id: POL-005
+    description: "Requested amount exceeds the product maximum"
+    input: requestedAmount
+    operator: ">"
+    value: maxLoanAmount
+    outcome: COUNTER_OFFER
+    reasonCode: PRODUCT_LIMIT_EXCEEDED
+  - id: POL-006
+    description: "Requested amount exceeds the risk-band cap for this applicant"
+    input: requestedAmount
+    operator: ">"
+    value: riskBandCaps[riskBand]
+    outcome: COUNTER_OFFER
+    reasonCode: RISK_BAND_LIMIT_EXCEEDED
+  - id: POL-007
+    description: "Score falls within the manual-review range"
+    input: creditScore
+    operator: between
+    value: manualReviewScoreRange
+    outcome: REFER
+    reasonCode: MANUAL_REVIEW_REQUIRED
+  - id: POL-008
+    description: "Score at or above minimum, DTI within limit, amount within all caps"
+    input: creditScore
+    operator: ">="
+    value: minimumApprovalScore
+    outcome: APPROVE
+    reasonCode: APPROVED
